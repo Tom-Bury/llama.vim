@@ -33,6 +33,7 @@ highlight default llama_hl_fim_info guifg=#77ff2f ctermfg=119
 "   max_line_suffix:  do not auto-trigger FIM completion if there are more than this number of characters to the right of the cursor
 "   max_cache_keys:   max number of cached completions to keep in result_cache
 "   enable_at_startup: enable llama.vim functionality at startup (default: v:true)
+"   auto_fim_debounce_ms: min time before consecutive fim call for auto_fim - taken from https://github.com/ggml-org/llama.vim/pull/66/changes
 "
 " ring buffer of chunks, accumulated with time upon:
 "
@@ -101,6 +102,7 @@ let s:default_config = {
     \ 'keymap_inst_cancel':     "<Esc>",
     \ 'keymap_debug_toggle':    "<leader>lld",
     \ 'enable_at_startup':      v:true,
+    \ 'auto_fim_debounce_ms':   100,
     \ }
 
 let llama_config = get(g:, 'llama_config', s:default_config)
@@ -454,6 +456,7 @@ function! llama#init()
     let s:indent_last = -1   " last indentation level that was accepted (TODO: this might be buggy)
 
     let s:timer_fim = -1
+    let s:timer_debounce = -1
     let s:t_last_move = reltime() " last time the cursor moved
 
     let s:current_job_fim  = v:null
@@ -509,7 +512,7 @@ function! llama#setup_autocmds()
             autocmd CursorMoved     * call s:on_move()
             autocmd CursorMovedI    * call s:on_move()
 
-            autocmd CursorMovedI * call llama#fim(-1, -1, v:true, [], v:true)
+            autocmd CursorMovedI * call llama#fim_debounced(-1, -1, v:true, [], v:true)
         endif
 
         " gather chunks upon yanking
@@ -871,6 +874,16 @@ function! llama#fim_inline(is_auto, use_cache) abort
     return ''
 endfunction
 
+" a wrapper of llama#fim with debounce timer.
+function! llama#fim_debounced(...) abort
+  if s:timer_debounce != -1
+    call timer_stop(s:timer_debounce)
+  endif
+
+  let l:args = a:000
+  let s:timer_debounce = timer_start(g:llama_config.auto_fim_debounce_ms, { -> call('llama#fim', l:args) })
+endfunction
+
 " the main FIM call
 " takes local context around the cursor and sends it together with the extra context to the server for completion
 function! llama#fim(pos_x, pos_y, is_auto, prev, use_cache) abort
@@ -1134,6 +1147,15 @@ function! s:on_move()
     let l:pos_y = line('.')
 
     call s:fim_try_hint(l:pos_x, l:pos_y)
+endfunction
+
+function! s:on_move_during_insert()
+    let s:t_last_move = reltime()
+
+    call llama#fim_hide()
+
+    let l:pos_x = col('.') - 1
+    let l:pos_y = line('.')
 endfunction
 
 " try to generate a suggestion using the data in the cache
